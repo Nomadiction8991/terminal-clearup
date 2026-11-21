@@ -12,7 +12,9 @@ Eu uso várias automações no Orca e prefiro iniciar cada execução em uma aba
 
 No meu Linux, cada aba de CLI que ficava aberta depois de uma execução ainda consumia cerca de **200 a 400 MB de RAM**. Quando várias se acumulavam, a pressão de memória fazia o sistema encerrar processos do Orca, interrompendo minhas automações.
 
-Já encontrei plugins que ajudam a evitar o início de novas automações quando falta memória. Na minha busca, não encontrei um que cuidasse das abas que sobravam depois. Foi por isso que criei o **Terminal Clearup**. Espero que ajude quem passa pelo mesmo problema.
+O plugin que eu usava segurava novas execuções quando faltava RAM. Isso ajudava a evitar que o consumo subisse ainda mais, mas as abas que já estavam abertas continuavam ocupando memória. No meu caso, a fila ficava parada enquanto essas sessões seguiam abertas.
+
+Na minha busca, não encontrei um plugin que fechasse os terminais deixados pelas automações depois que elas terminavam. Foi por isso que criei o **Terminal Clearup**: para fechar essas abas e ajudar a liberar memória para as próximas execuções. Espero que ajude quem passa pelo mesmo problema.
 
 ## Instalação
 
