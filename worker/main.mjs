@@ -6,13 +6,16 @@ import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
 const interval = 60_000
+function minutesOrDefault(value, fallback) {
+  return Number.isInteger(value) && value >= 0 && value <= 999 ? value : fallback
+}
+
 async function gracePeriod(orca) {
-  const minutes = await orca.settings.get('idleMinutes')
-  return (Number.isInteger(minutes) && minutes >= 0 && minutes <= 999 ? minutes : 3) * interval
+  return minutesOrDefault(await orca.settings.get('idleMinutes'), 3) * interval
 }
 
 function localCli() {
-  // The worker runs in Orca's Electron executable, including in portable builds.
+  // O worker roda no executável Electron do Orca, inclusive nas versões portáteis.
   const entry = join(dirname(process.execPath), 'resources', 'app.asar.unpacked', 'out', 'cli', 'index.js')
   try {
     accessSync(entry, constants.R_OK)
@@ -29,7 +32,7 @@ function localCli() {
         accessSync(executable, constants.X_OK)
         return [executable]
       } catch {
-        // Try the next launcher.
+        // Tenta o próximo launcher.
       }
     }
     throw new Error('CLI do Orca não encontrada')
@@ -88,16 +91,52 @@ export function startCleanup(orca, {
   let observed = new Map()
   let otherObserved = new Map()
   let daily
+  // Dias anteriores com contagem ainda não gravada, na ordem em que a virada aconteceu.
+  const unsavedDays = []
   async function dailyTotal() {
     daily ??= await orca.storage.get('dailyClosures')
     const day = new Date(now()).toLocaleDateString('en-CA')
-    if (daily?.day !== day) daily = { day, count: 0, lastClosedAt: null }
+    if (daily?.day !== day) {
+      if (dailyDirty) unsavedDays.push(daily)
+      daily = { day, count: 0, lastClosedAt: null }
+      dailyDirty = false
+    }
     return daily
   }
+  // Contagem em memória ainda não gravada; persistDaily tenta de novo a cada varredura.
+  let dailyDirty = false
+  let dailyWarned = false
+  async function persistDaily() {
+    if (!dailyDirty && unsavedDays.length === 0) return
+    try {
+      // Dias anteriores vão primeiro, em ordem, para não serem sobrescritos pelo atual.
+      while (unsavedDays.length > 0) {
+        const pending = unsavedDays[0]
+        await Promise.resolve().then(() => orca.storage.set('dailyClosures', pending))
+        unsavedDays.shift()
+      }
+      if (dailyDirty) {
+        await Promise.resolve().then(() => orca.storage.set('dailyClosures', daily))
+        dailyDirty = false
+      }
+      dailyWarned = false
+    } catch {
+      // Um aviso por sequência de falhas; as próximas tentativas são silenciosas.
+      if (!dailyWarned) orca.log('Não foi possível salvar o contador diário')
+      dailyWarned = true
+    }
+  }
   let lastInventory = null
+  // Terminais (ptyId + incarnação) já contados como fechados e ainda listados pelo Orca.
+  const closedInstances = new Set()
   let busy = false
-  async function poll() {
-    if (busy) return
+  let rerun = false
+  async function poll({ fromSettings = false } = {}) {
+    if (busy) {
+      // Mudança de configuração durante uma varredura agenda outra ao terminar; disparos do timer são descartados.
+      if (fromSettings) rerun = true
+      return
+    }
     busy = true
     const startedAt = now()
     let calls = 0
@@ -112,15 +151,22 @@ export function startCleanup(orca, {
         throw error
       }
     }
+    const listTerminals = async () => {
+      const response = await query('terminal', 'list')
+      if (!Array.isArray(response?.terminals)) {
+        throw new Error('resposta inesperada ao listar terminais')
+      }
+      return response
+    }
     try {
       if (platform !== 'linux' && platform !== 'win32') {
         observed.clear()
         await orca.host.call('statusBar.update', { id: 'cleanup', visible: false })
         return
       }
-      const automationEnabled = (await orca.settings.get('automationCleanupEnabled')) !== false
+      let automationEnabled = (await orca.settings.get('automationCleanupEnabled')) !== false
       const otherEnabled = (await orca.settings.get('otherObservationEnabled')) === true
-      const { terminals, truncated } = await query('terminal', 'list')
+      const { terminals, truncated } = await listTerminals()
       if (truncated) {
         throw new Error('lista de terminais incompleta; fechamento adiado')
       }
@@ -129,12 +175,41 @@ export function startCleanup(orca, {
       const cleanupUnobserved = (await orca.settings.get('cleanupUnobservedRuns')) !== false
       const current = new Map()
       const otherCurrent = new Map()
-      const otherMinutes = await orca.settings.get('otherIdleMinutes') ?? 15
+      const otherMinutes = minutesOrDefault(await orca.settings.get('otherIdleMinutes'), 15)
       const runIndex = indexRuns(runs)
+      const listedInstances = new Set(terminals.map((item) => JSON.stringify([item.ptyId, item.incarnationId])))
       let refreshedIndex
       let memorySample
       let otherQuiet = 0
       let automationNames
+      async function recordClosure(total, run, outcome, measuredBytes) {
+        const next = { ...total, count: total.count + 1, lastClosedAt: new Date(now()).toLocaleTimeString('pt-BR') }
+        if (measuredBytes) {
+          next.memoryBytes = (total.memoryBytes ?? 0) + measuredBytes
+          next.measuredCount = (total.measuredCount ?? 0) + 1
+        }
+        // A contagem fica em memória mesmo se a gravação falhar; persistDaily tenta de novo nas próximas varreduras.
+        daily = next
+        dailyDirty = true
+        await persistDaily()
+        orca.log(`${outcome} · automação ${run.automationId} · execução ${run.id}`)
+        try {
+          automationNames ??= await query('automations', 'list')
+            .then(({ automations }) => new Map(automations.map(({ id, name }) => [id, name])))
+            .catch(() => new Map())
+          const entries = await orca.storage.get('closureHistory')
+          const entry = {
+            at: now(),
+            name: automationNames.get(run.automationId) || run.title || run.automationId,
+            outcome,
+            ...(measuredBytes ? { estimatedMemoryBytes: measuredBytes } : {}),
+            runId: run.id
+          }
+          await orca.storage.set('closureHistory', [entry, ...(entries ?? [])].slice(0, 50))
+        } catch {
+          orca.log(`Não foi possível salvar o histórico da execução ${run.id}`)
+        }
+      }
       for (const terminal of terminals) {
         if (!terminal.ptyId || !terminal.tabId || !terminal.leafId ||
             !terminal.handle || !terminal.incarnationId || terminal.orphaned) continue
@@ -148,6 +223,8 @@ export function startCleanup(orca, {
         if (!automationEnabled) continue
         const run = owner(runIndex, terminal)
         if (!run) continue
+        const instance = JSON.stringify([terminal.ptyId, terminal.incarnationId])
+        if (closedInstances.has(instance)) continue
         const needsIdleProof = lostObservation(run)
         if (needsIdleProof && !cleanupUnobserved) continue
         const minimumGrace = needsIdleProof ? 3 * interval : 0
@@ -168,8 +245,15 @@ export function startCleanup(orca, {
             ?.sessions?.find((row) => row.sessionId === terminal.ptyId &&
               row.paneKey === `${terminal.tabId}:${terminal.leafId}`)
           : null
-        refreshedIndex ??= indexRuns((await query('automations', 'runs')).runs)
-        const freshTerminals = await query('terminal', 'list')
+        let freshTerminals
+        try {
+          refreshedIndex ??= indexRuns((await query('automations', 'runs')).runs)
+          freshTerminals = await listTerminals()
+        } catch (error) {
+          // Falha só deste terminal: ele segue observado e os demais mantêm a contagem da carência.
+          orca.log(`Revalidação adiada da execução ${run.id}: ${error.message}`)
+          continue
+        }
         const live = freshTerminals.terminals.find((item) => item.handle === terminal.handle)
         const refreshedRun = live && owner(refreshedIndex, live)
         if (freshTerminals.truncated || !live || live.orphaned ||
@@ -186,64 +270,65 @@ export function startCleanup(orca, {
 
         if ((await orca.settings.get('automationCleanupEnabled')) === false) {
           current.clear()
-          break
-        }
-        let receipt
-        try {
-          const result = await query('terminal', 'close', '--terminal', live.handle)
-          receipt = result.close ?? result
-        } catch (error) {
-          orca.log(`Falha ao fechar execução ${run.id}: ${error.message}`)
+          automationEnabled = false
           continue
         }
-        const after = await query('terminal', 'list')
-        const stillListed = after.terminals.some((item) =>
-          item.ptyId === live.ptyId && item.incarnationId === live.incarnationId
-        )
-        if (!stillListed && (receipt.ptyKilled === true || !after.truncated)) {
-          const total = await dailyTotal()
+        // Lê o contador antes do close: se a leitura falhar, nada é fechado sem registro.
+        const total = await dailyTotal()
+        let receipt = {}
+        let closeFailed = false
+        try {
+          const result = await query('terminal', 'close', '--terminal', live.handle)
+          receipt = result?.close ?? result ?? {}
+        } catch (error) {
+          // Falha no close não é prova de fechamento: a listagem abaixo só informa, sem contar.
+          closeFailed = true
+          orca.log(`Falha ao fechar execução ${run.id}: ${error.message}`)
+        }
+        let after = null
+        try {
+          const response = await query('terminal', 'list')
+          if (Array.isArray(response?.terminals)) after = response
+          else orca.log(`Resposta inesperada ao listar terminais após fechar ${run.id}`)
+        } catch (error) {
+          orca.log(`Não foi possível confirmar o fechamento da execução ${run.id}: ${error.message}`)
+        }
+        const stillListed = after
+          ? after.terminals.some((item) => item.ptyId === live.ptyId && item.incarnationId === live.incarnationId)
+          : null
+        // ptyKilled é a prova no nível do processo; uma listagem atrasada não pode ocultá-la.
+        const closed = !closeFailed && (receipt.ptyKilled === true || (stillListed === false && !after.truncated))
+        if (closed) {
+          closedInstances.add(instance)
           const measuredBytes = receipt.ptyKilled === true &&
             Number.isFinite(memoryRow?.memory) && memoryRow.memory > 0 ? memoryRow.memory : 0
-          total.count += 1
-          if (measuredBytes) {
-            total.memoryBytes = (total.memoryBytes ?? 0) + measuredBytes
-            total.measuredCount = (total.measuredCount ?? 0) + 1
-          }
-          total.lastClosedAt = new Date(now()).toLocaleTimeString('pt-BR')
-          await orca.storage.set('dailyClosures', total).catch(() => {
-            orca.log('Não foi possível salvar o contador diário')
-          })
-          const outcome = receipt.ptyKilled === true ? 'Processo encerrado' : 'Terminal saiu da lista de ativos'
-          orca.log(`${outcome} · automação ${run.automationId} · execução ${run.id}`)
-          try {
-            automationNames ??= await query('automations', 'list')
-              .then(({ automations }) => new Map(automations.map(({ id, name }) => [id, name])))
-              .catch(() => new Map())
-            const entries = await orca.storage.get('closureHistory')
-            const entry = {
-              at: now(),
-              name: automationNames.get(run.automationId) || run.title || run.automationId,
-              outcome,
-              ...(measuredBytes ? { estimatedMemoryBytes: measuredBytes } : {}),
-              runId: run.id
-            }
-            await orca.storage.set('closureHistory', [entry, ...(entries ?? [])].slice(0, 50))
-          } catch {
-            orca.log(`Não foi possível salvar o histórico da execução ${run.id}`)
-          }
+          await recordClosure(total, run,
+            receipt.ptyKilled === true ? 'Processo encerrado' : 'Terminal saiu da lista de ativos', measuredBytes)
         } else {
-          orca.log(`Encerramento do processo não confirmado · execução ${run.id}`)
+          orca.log(closeFailed
+            ? (stillListed === false
+              ? `Terminal saiu da lista após falha do close; sem prova de encerramento, não contado · execução ${run.id}`
+              : `Fechamento não confirmado após falha do close · execução ${run.id}`)
+            : after === null
+              ? `Não foi possível confirmar o encerramento (listagem indisponível) · execução ${run.id}`
+              : `Encerramento do processo não confirmado · execução ${run.id}`)
+          current.delete(key)
           continue
         }
         current.delete(key)
       }
       observed = current
       otherObserved = otherCurrent
-      const inventory = `${terminals.length} abertos na varredura · ${current.size} de automação em observação · ${otherQuiet} de ${otherCurrent.size} outras sessões sem saída pelo prazo configurado`
+      for (const instance of closedInstances) {
+        if (!listedInstances.has(instance)) closedInstances.delete(instance)
+      }
+      const alreadyClosed = terminals.filter((item) => closedInstances.has(JSON.stringify([item.ptyId, item.incarnationId]))).length
+      const inventory = `${terminals.length - alreadyClosed} abertos na varredura · ${current.size} de automação em observação · ${otherQuiet} de ${otherCurrent.size} outras sessões sem saída pelo prazo configurado`
       if (inventory !== lastInventory) {
         orca.log(`Varredura: ${inventory}`)
         lastInventory = inventory
       }
+      await persistDaily()
       const { count, lastClosedAt, memoryBytes = 0, measuredCount = 0 } = await dailyTotal()
       const unit = memoryBytes >= 1024 ** 3 ? 'GiB' : 'MiB'
       const memory = measuredCount > 0
@@ -268,6 +353,10 @@ export function startCleanup(orca, {
       }).catch(() => {})
     } finally {
       busy = false
+      if (rerun) {
+        rerun = false
+        void poll()
+      }
       if (attempted || probeFailures) {
         orca.log(`Custo da varredura: ${now() - startedAt} ms · ${calls} chamadas à CLI · ${probeFailures} falhas em chamadas`)
       }
@@ -275,9 +364,9 @@ export function startCleanup(orca, {
   }
   orca.settings.onDidChange(({ key }) => {
     if (key === 'idleMinutes' || key === 'showCounter' || key === 'otherIdleMinutes' ||
-        key === 'cleanupUnobservedRuns' || key === 'automationCleanupEnabled' || key === 'otherObservationEnabled') void poll()
+        key === 'cleanupUnobservedRuns' || key === 'automationCleanupEnabled' || key === 'otherObservationEnabled') void poll({ fromSettings: true })
   })
-  schedule(poll, interval)
+  schedule(() => poll(), interval)
   return poll()
 }
 

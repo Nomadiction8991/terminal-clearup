@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "automation-terminal-cleanup",
   "name": "Terminal Clearup",
-  "version": "0.3.20",
+  "version": "0.3.21",
   "description": "Automatically close terminals tied to completed local automation runs.",
   "engines": {
     "orca": ">=1.4.266"

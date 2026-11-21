@@ -21,7 +21,7 @@ Na minha busca, não encontrei um plugin que fechasse os terminais deixados pela
 No Orca, abra **Configurações → Plugins** e procure por **Terminal Clearup** se o plugin estiver disponível no seu catálogo comunitário. Também é possível instalar diretamente do GitHub:
 
 ```sh
-orca plugin install Nomadiction8991/terminal-clearup@v0.3.20
+orca plugin install Nomadiction8991/terminal-clearup@v0.3.21
 ```
 
 Revise o acesso solicitado pelo Orca e habilite o plugin. A limpeza de automações vem ligada por padrão.
