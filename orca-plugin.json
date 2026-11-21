@@ -1,0 +1,96 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "automation-terminal-cleanup",
+  "name": "Terminal Clearup",
+  "version": "0.3.17",
+  "description": "Automatically close terminals tied to completed local automation runs.",
+  "engines": {
+    "orca": ">=1.4.266"
+  },
+  "pluginApi": 1,
+  "main": "worker/main.mjs",
+  "contributes": {
+    "statusBarItems": [
+      {
+        "id": "cleanup",
+        "text": "Limpeza de automações",
+        "icon": "terminal"
+      }
+    ],
+    "settings": [
+      {
+        "key": "automationCleanupEnabled",
+        "title": "Limpar terminais de automações concluídas",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "idleMinutes",
+        "title": "Tempo sem atividade das automações (minutos)",
+        "description": "A cada minuto, o plugin cruza os terminais abertos, inclusive os anteriores à instalação, com o histórico local de automações. Só considera terminais com vínculo único a uma execução Concluída. A espera começa na primeira varredura que identifica o terminal e recomeça se houver nova saída. O padrão é 3 minutos. Com 0, fecha sem espera na primeira varredura elegível. Na próxima varredura após esse prazo, o plugin confere o vínculo novamente e tenta fechar o painel. O histórico da automação é preservado. Para pausar a limpeza, desligue a chave de limpeza de automações.",
+        "type": "integer",
+        "default": 3,
+        "minimum": 0,
+        "maximum": 999
+      },
+      {
+        "key": "cleanupUnobservedRuns",
+        "title": "Limpar automações que perderam o acompanhamento",
+        "description": "Fecha somente quando o Orca perdeu o acompanhamento da execução e confirma que o agente está ocioso. Aguarda pelo menos 3 minutos sem saída, mesmo se o prazo de automações for zero.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "otherObservationEnabled",
+        "title": "Observar outras sessões do Orca",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "key": "otherIdleMinutes",
+        "title": "Observar outras sessões após (minutos)",
+        "description": "Destaca sessões abertas no Orca sem vínculo identificado com automações. O tempo reinicia se houver nova saída. O resultado aparece ao passar o mouse sobre o contador. Essas sessões não são fechadas pelo plugin. Use 0 para mostrar as sessões já na primeira varredura.",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 999,
+        "default": 15
+      },
+      {
+        "key": "showCounter",
+        "title": "Mostrar contador na barra inferior",
+        "description": "Mostra quantos terminais saíram da lista de ativos após a limpeza hoje, pelo horário local. Passe o mouse para ver quantos estão em observação e a hora do último fechamento. Avisos de falha continuam visíveis.",
+        "type": "boolean",
+        "default": true
+      }
+    ],
+    "panels": [
+      {
+        "id": "history",
+        "title": "Histórico do Terminal Clearup",
+        "icon": "terminal",
+        "entry": "src/history.tsx",
+        "ui": "components"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "storage:own"
+    }
+  ],
+  "cover": {
+    "path": "images/cover.webp",
+    "alt": "Terminal Clearup: menos abas, menos RAM. Uma aba concluída é fechada e o contador mostra oito fechamentos no dia."
+  },
+  "screenshots": [
+    {
+      "path": "images/dashboard.webp",
+      "alt": "Painel do Terminal Clearup mostrando histórico de fechamentos, configurações, logs e o total diário de abas e memória.",
+      "caption": "Histórico, configurações e resumo diário do Terminal Clearup"
+    }
+  ]
+}
