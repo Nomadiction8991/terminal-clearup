@@ -1,11 +1,61 @@
 # Terminal Clearup
 
-Plugin do Orca para Linux e Windows. A limpeza começa quando o plugin é habilitado. Para interromper, desabilite o plugin em Configurações → Plugins.
+![Terminal Clearup para Orca. Menos abas, menos RAM.](images/cover.webp)
 
-O plugin consulta o histórico local e os terminais vivos pela CLI do Orca. Fecha somente um painel por vez, quando uma única execução concluída corresponde ao workspace e painel, com o mesmo PTY quando o histórico ainda guarda esse identificador, sem mudança de saída durante um período configurável de observação (três minutos por padrão, entre 0 e 999 minutos). Valida novamente o vínculo e a instância do terminal antes de fechar. Execuções sem vínculo, terminais compartilhados por várias execuções e chats nativos ficam fora da limpeza. O histórico da execução é preservado. O plugin não muda o modo de criação de sessões.
+**Feche automaticamente terminais de automações concluídas no Orca.** Acompanhe as abas fechadas e a estimativa de RAM liberada no dia, com histórico dentro do aplicativo.
 
-Requer Orca 1.4.266 ou posterior no Linux ou Windows. O plugin procura a CLI na instalação que iniciou o worker e, no Linux, pode usar os lançadores locais como alternativa. O histórico estima a RAM liberada com o RSS no Linux ou o working set no Windows.
+[Instalação](#instalação) · [Como funciona](#como-funciona) · [Configurações](#configurações) · [Compatibilidade](#compatibilidade)
 
-Em Configurações → Plugins → Terminal Clearup, escolha o tempo sem atividade e se deseja mostrar o contador na barra inferior.
+## Instalação
 
-A varredura ocorre na inicialização e a cada minuto. O tempo começa quando um terminal elegível é observado pela primeira vez e recomeça se houver nova saída ou se o plugin reiniciar. O fechamento é tentado na próxima varredura após o prazo. Passe o mouse sobre o contador para ver os terminais em observação e o horário do último fechamento.
+No Orca, abra **Configurações → Plugins** e procure por **Terminal Clearup** se o plugin estiver disponível no seu catálogo comunitário. Também é possível instalar diretamente do GitHub:
+
+```sh
+orca plugin install Nomadiction8991/terminal-clearup@v0.3.18
+```
+
+Revise o acesso solicitado pelo Orca e habilite o plugin. A limpeza de automações vem ligada por padrão.
+
+## Como funciona
+
+1. Na inicialização e a cada minuto, o plugin cruza os terminais abertos com o histórico local de automações. Isso inclui terminais que já estavam abertos antes da instalação.
+2. Um terminal entra na limpeza quando tem vínculo único com uma execução concluída. A espera começa na primeira detecção e reinicia se o terminal gerar nova saída. Antes do fechamento, o plugin confere novamente a identidade da sessão e sua atividade.
+3. O contador da barra inferior mostra as abas fechadas hoje e a estimativa de RAM liberada quando há medição. O painel **Histórico do Terminal Clearup** guarda os 50 fechamentos mais recentes.
+
+Quando o Orca perde o acompanhamento de uma execução, há uma regra separada. Ela exige pelo menos três minutos sem nova saída e confirmação de ociosidade pelo Orca. Terminais sem vínculo identificado com automações podem ser observados, mas ficam fora do fechamento automático.
+
+![Histórico de fechamentos, configurações, logs e totais do dia no Orca.](images/dashboard.webp)
+
+## Configurações
+
+Abra **Configurações → Plugins → Terminal Clearup**.
+
+| Opção | Padrão | Efeito |
+|---|---|---|
+| Limpar automações concluídas | Ligado | Fecha o terminal vinculado à execução concluída. |
+| Tempo sem atividade das automações | 3 min | Aceita de 0 a 999. Com 0, tenta fechar na primeira varredura elegível. |
+| Limpar automações que perderam o acompanhamento | Ligado | Exige confirmação de ociosidade e pelo menos 3 minutos sem nova saída. |
+| Observar outras sessões do Orca | Desligado | Mostra sessões sem vínculo identificado no resumo, sem fechá-las. |
+| Observar outras sessões após | 15 min | Use 0 para mostrá-las já na primeira varredura. |
+| Mostrar contador na barra inferior | Ligado | Mostra o total de hoje. Passe o mouse para ver quantos fechamentos tiveram medição. |
+
+## Compatibilidade
+
+- **Orca 1.4.266 ou posterior.** Esse é o mínimo declarado no manifesto. O plugin aceita versões posteriores sem limite máximo, desde que mantenham os comandos e os formatos de resposta usados pelo plugin. As versões futuras não foram verificadas.
+- **Linux e Windows.** A limpeza foi exercitada em uso real no Linux. O suporte ao Windows foi implementado na versão 0.3.18 e ainda precisa de validação de ponta a ponta em uma máquina Windows.
+- **Sessões locais com terminal.** A limpeza depende do vínculo registrado entre a automação e o painel. Conversas nativas sem terminal ficam fora dela.
+
+## Medição de RAM e acesso
+
+O plugin usa a métrica por sessão do próprio Orca, RSS no Linux e *working set* no Windows. O histórico mostra uma estimativa quando há medição e o Orca confirma que encerrou o processo. O valor pode diferir do aumento de RAM disponível no sistema.
+
+O Orca mostra um aviso de acesso total porque o plugin roda como `trusted-worker` para chamar a CLI local. O histórico e o contador são guardados no armazenamento do próprio plugin.
+
+## Desenvolvimento
+
+Para verificar o manifesto e executar os testes simulados:
+
+```sh
+orca plugin validate .
+node --test tests/cleanup.test.mjs
+```
