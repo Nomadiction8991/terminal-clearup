@@ -1,4 +1,4 @@
-import { atom, Badge, Heading, read, Row, Separator, Stack, Text } from 'orca'
+import { atom, Badge, Heading, Link, read, Row, Separator, Stack, Text } from 'orca'
 
 type Closure = { at: number; name: string; outcome: string; runId: string; estimatedMemoryBytes?: number }
 const history = atom<Closure[]>('closureHistory', [], { persist: 'storage' })
@@ -41,6 +41,7 @@ export default function History() {
           })}
         </Stack>
       ))}
+      <Link href="https://github.com/Nomadiction8991/terminal-clearup">Dar estrela no GitHub</Link>
     </Stack>
   )
 }

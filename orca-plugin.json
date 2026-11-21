@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "automation-terminal-cleanup",
   "name": "Terminal Clearup",
-  "version": "0.3.18",
+  "version": "0.3.19",
   "description": "Automatically close terminals tied to completed local automation runs.",
   "engines": {
     "orca": ">=1.4.266"
@@ -92,5 +92,6 @@
       "alt": "Painel do Terminal Clearup mostrando histórico de fechamentos, configurações, logs e o total diário de abas e memória.",
       "caption": "Histórico, configurações e resumo diário do Terminal Clearup"
     }
-  ]
+  ],
+  "repository": "https://github.com/Nomadiction8991/terminal-clearup"
 }
