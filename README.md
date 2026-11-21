@@ -4,7 +4,15 @@
 
 **Feche automaticamente terminais de automações concluídas no Orca.** Acompanhe as abas fechadas e a estimativa de RAM liberada no dia, com histórico dentro do aplicativo.
 
-[Instalação](#instalação) · [Como funciona](#como-funciona) · [Configurações](#configurações) · [Compatibilidade](#compatibilidade)
+[Instalação](#instalação) · [Como funciona](#como-funciona) · [Configurações](#configurações) · [Compatibilidade](#compatibilidade) · [Contribuições](#contribuições)
+
+## Por que criei este plugin
+
+Eu uso várias automações no Orca e prefiro iniciar cada execução em uma aba com uma sessão nova. Assim, o contexto das execuções anteriores não vai se acumulando e aumentando o custo das próximas.
+
+No meu Linux, cada aba de CLI que ficava aberta depois de uma execução ainda consumia cerca de **200 a 400 MB de RAM**. Quando várias se acumulavam, a pressão de memória fazia o sistema encerrar processos do Orca, interrompendo minhas automações.
+
+Já encontrei plugins que ajudam a evitar o início de novas automações quando falta memória. Na minha busca, não encontrei um que cuidasse das abas que sobravam depois. Foi por isso que criei o **Terminal Clearup**. Espero que ajude quem passa pelo mesmo problema.
 
 ## Instalação
 
@@ -59,3 +67,12 @@ Para verificar o manifesto e executar os testes simulados:
 orca plugin validate .
 node --test tests/cleanup.test.mjs
 ```
+
+
+## Contribuições
+
+Encontrou um problema ou tem uma ideia de melhoria? [Abra uma issue](https://github.com/Nomadiction8991/terminal-clearup/issues/new). Vou analisar as sugestões e incorporar as que fizerem sentido para o plugin.
+
+Contribuições com ajuda de IA também são bem-vindas. Se mandar um PR, explique o que mudou e como você verificou o comportamento.
+
+Valeu, tamo junto!
