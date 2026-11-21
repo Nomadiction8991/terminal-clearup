@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "automation-terminal-cleanup",
   "name": "Terminal Clearup",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "description": "Automatically close terminals tied to completed local automation runs.",
   "engines": {
     "orca": ">=1.4.266"
@@ -93,5 +93,6 @@
       "caption": "Histórico, configurações e resumo diário do Terminal Clearup"
     }
   ],
-  "repository": "https://github.com/Nomadiction8991/terminal-clearup"
+  "repository": "https://github.com/Nomadiction8991/terminal-clearup",
+  "license": "MIT"
 }
