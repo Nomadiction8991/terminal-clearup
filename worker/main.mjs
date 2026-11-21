@@ -18,6 +18,9 @@ function localCli() {
     accessSync(entry, constants.R_OK)
     return [process.execPath, entry]
   } catch {
+    if (process.platform === 'win32') {
+      throw new Error('CLI do Orca não encontrada na instalação do Windows')
+    }
     const directories = (process.env.PATH ?? '').split(':').filter(isAbsolute)
     const candidates = [...directories.map((directory) => join(directory, 'orca-ide')),
       join(homedir(), '.local', 'bin', 'orca')]
@@ -37,7 +40,7 @@ async function cli(...args) {
   const [executable, ...prefix] = localCli()
   const { stdout } = await exec(executable, [
     ...prefix, ...args, '--environment', 'local', '--json'
-  ], { timeout: 15_000, maxBuffer: 32 * 1024 * 1024,
+  ], { windowsHide: true, timeout: 15_000, maxBuffer: 32 * 1024 * 1024,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }).catch((error) => {
     let code = error.code
     try { code = JSON.parse(error.stdout).error?.code ?? code } catch {}
@@ -110,7 +113,7 @@ export function startCleanup(orca, {
       }
     }
     try {
-      if (platform !== 'linux') {
+      if (platform !== 'linux' && platform !== 'win32') {
         observed.clear()
         await orca.host.call('statusBar.update', { id: 'cleanup', visible: false })
         return
@@ -160,7 +163,7 @@ export function startCleanup(orca, {
 
         attempted = true
         if (memorySample === undefined) memorySample = await query('diagnostics', 'memory').catch(() => null)
-        const memoryRow = memorySample?.processMemoryMetric === 'rss'
+        const memoryRow = ['rss', 'working-set'].includes(memorySample?.processMemoryMetric)
           ? memorySample.worktrees?.find((row) => row.worktreeId === terminal.worktreeId)
             ?.sessions?.find((row) => row.sessionId === terminal.ptyId &&
               row.paneKey === `${terminal.tabId}:${terminal.leafId}`)
