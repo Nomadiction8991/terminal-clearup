@@ -91,34 +91,37 @@ export function startCleanup(orca, {
   let observed = new Map()
   let otherObserved = new Map()
   let daily
-  // Dias anteriores com contagem ainda não gravada, na ordem em que a virada aconteceu.
-  const unsavedDays = []
+  // Houve virada com a contagem do dia anterior não gravada; aparece no tooltip até a virada seguinte.
+  let droppedDay = false
   async function dailyTotal() {
     daily ??= await orca.storage.get('dailyClosures')
     const day = new Date(now()).toLocaleDateString('en-CA')
     if (daily?.day !== day) {
-      if (dailyDirty) unsavedDays.push(daily)
+      // O aviso de dias descartados vale até a virada: a perda fica visível durante o dia em que aconteceu.
+      droppedDay = false
+      if (dailyDirty) {
+        // Tenta gravar o dia anterior antes de trocá-lo; se a gravação falhar, a contagem dele fica sem registro.
+        const previous = daily
+        const saved = await Promise.resolve().then(() => orca.storage.set('dailyClosures', previous)).then(() => true, () => false)
+        if (!saved) {
+          droppedDay = true
+          orca.log(`Contagem de ${previous.day} não gravada antes da virada do dia`)
+        }
+      }
       daily = { day, count: 0, lastClosedAt: null }
       dailyDirty = false
     }
     return daily
   }
   // Contagem em memória ainda não gravada; persistDaily tenta de novo a cada varredura.
+  // A API de worker do Orca não tem hook de desativação, então contagem não gravada se perde se o plugin for descarregado.
   let dailyDirty = false
   let dailyWarned = false
   async function persistDaily() {
-    if (!dailyDirty && unsavedDays.length === 0) return
+    if (!dailyDirty) return
     try {
-      // Dias anteriores vão primeiro, em ordem, para não serem sobrescritos pelo atual.
-      while (unsavedDays.length > 0) {
-        const pending = unsavedDays[0]
-        await Promise.resolve().then(() => orca.storage.set('dailyClosures', pending))
-        unsavedDays.shift()
-      }
-      if (dailyDirty) {
-        await Promise.resolve().then(() => orca.storage.set('dailyClosures', daily))
-        dailyDirty = false
-      }
+      await Promise.resolve().then(() => orca.storage.set('dailyClosures', daily))
+      dailyDirty = false
       dailyWarned = false
     } catch {
       // Um aviso por sequência de falhas; as próximas tentativas são silenciosas.
@@ -182,7 +185,9 @@ export function startCleanup(orca, {
       let memorySample
       let otherQuiet = 0
       let automationNames
-      async function recordClosure(total, run, outcome, measuredBytes) {
+      async function recordClosure(run, outcome, measuredBytes) {
+        // Vem do cache carregado antes do close (sem nova leitura do storage). Se o dia virou durante o fechamento, conta no dia atual.
+        const total = await dailyTotal()
         const next = { ...total, count: total.count + 1, lastClosedAt: new Date(now()).toLocaleTimeString('pt-BR') }
         if (measuredBytes) {
           next.memoryBytes = (total.memoryBytes ?? 0) + measuredBytes
@@ -273,8 +278,8 @@ export function startCleanup(orca, {
           automationEnabled = false
           continue
         }
-        // Lê o contador antes do close: se a leitura falhar, nada é fechado sem registro.
-        const total = await dailyTotal()
+        // Carrega o contador antes do close: se a leitura falhar, nada é fechado; depois do close ele já está em memória.
+        await dailyTotal()
         let receipt = {}
         let closeFailed = false
         try {
@@ -302,7 +307,7 @@ export function startCleanup(orca, {
           closedInstances.add(instance)
           const measuredBytes = receipt.ptyKilled === true &&
             Number.isFinite(memoryRow?.memory) && memoryRow.memory > 0 ? memoryRow.memory : 0
-          await recordClosure(total, run,
+          await recordClosure(run,
             receipt.ptyKilled === true ? 'Processo encerrado' : 'Terminal saiu da lista de ativos', measuredBytes)
         } else {
           orca.log(closeFailed
@@ -322,14 +327,20 @@ export function startCleanup(orca, {
       for (const instance of closedInstances) {
         if (!listedInstances.has(instance)) closedInstances.delete(instance)
       }
-      const alreadyClosed = terminals.filter((item) => closedInstances.has(JSON.stringify([item.ptyId, item.incarnationId]))).length
-      const inventory = `${terminals.length - alreadyClosed} abertos na varredura · ${current.size} de automação em observação · ${otherQuiet} de ${otherCurrent.size} outras sessões sem saída pelo prazo configurado`
+      // Elegíveis: terminais com identificação completa, sem orphaned, com execução de automação dona (só com a limpeza ligada).
+      const automated = automationEnabled ? terminals.filter((item) =>
+        item.ptyId && item.tabId && item.leafId && item.handle && item.incarnationId && !item.orphaned &&
+        owner(runIndex, item)
+      ) : []
+      const alreadyClosed = automated.filter((item) => closedInstances.has(JSON.stringify([item.ptyId, item.incarnationId]))).length
+      const inventory = `${automated.length - alreadyClosed} ${automated.length - alreadyClosed === 1 ? 'terminal com automação' : 'terminais com automação'} na varredura${alreadyClosed ? ` (${alreadyClosed} ${alreadyClosed === 1 ? 'já fechado' : 'já fechados'} pela limpeza)` : ''} · ${current.size} de automação em observação · ${otherQuiet} de ${otherCurrent.size} outras sessões sem saída pelo prazo configurado`
       if (inventory !== lastInventory) {
         orca.log(`Varredura: ${inventory}`)
         lastInventory = inventory
       }
-      await persistDaily()
+      // Primeiro o dia atual (que pode ter virado nesta varredura), depois a gravação pendente.
       const { count, lastClosedAt, memoryBytes = 0, measuredCount = 0 } = await dailyTotal()
+      await persistDaily()
       const unit = memoryBytes >= 1024 ** 3 ? 'GiB' : 'MiB'
       const memory = measuredCount > 0
         ? `≈ ${(memoryBytes / (unit === 'GiB' ? 1024 ** 3 : 1024 ** 2)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} ${unit}`
@@ -342,7 +353,7 @@ export function startCleanup(orca, {
         text: `${memory} · ${tabs} hoje`,
         tooltip: `Hoje: ${tabs}. RAM estimada em ${measuredCount} de ${count} fechamentos. ${inventory}.${automationEnabled ? '' : ' Limpeza pausada.'}${
           lastClosedAt ? ` Último fechamento: ${lastClosedAt}.` : ''
-        }`
+        }${droppedDay ? ' Um dia sem gravação foi descartado.' : ''}`
       })
     } catch (error) {
       observed.clear()

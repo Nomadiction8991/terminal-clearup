@@ -1,6 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { startCleanup } from '../worker/main.mjs'
+import { readFileSync } from 'node:fs'
+
+// CLAUDE.md é uma cópia de agent.md, não um symlink: o Orca recusa symlink dentro do plugin instalado a partir desta pasta.
+// Este teste impede que as duas cópias divirjam.
+test('CLAUDE.md tem o mesmo conteúdo de agent.md', () => {
+  const agent = readFileSync(new URL('../agent.md', import.meta.url), 'utf8')
+  const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8')
+  assert.equal(claude, agent)
+})
 
 const terminal = {
   handle: 'term_1', ptyId: 'pty-1', worktreeId: 'workspace-1',
@@ -20,8 +29,8 @@ async function fixture({
   idle = true, memorySessions = null, closeReceipt = { ptyKilled: true },
   failClose = false, keepAfterClose = false, failListAfterClose = false,
   malformedListAfterClose = false, malformedList = false, failDailySet = false,
-  syncDailySet = false, failDailyGet = false,
-  closeFailsAfterRemoval = false, onStatus = null, onMemory = null
+  syncDailySet = false, failDailyGet = false, failDailyGetAfterClose = false,
+  closeFailsAfterRemoval = false, onStatus = null, onClose = null, onMemory = null
 } = {}) {
   let time = 0
   let poll
@@ -31,6 +40,7 @@ async function fixture({
   let postCloseLists = 0
   let dailyFailing = failDailySet
   const writes = []
+  const reads = { afterClose: 0 }
   const changeHandlers = []
   const emit = (key) => { for (const callback of changeHandlers) callback({ key }) }
   const store = new Map()
@@ -41,6 +51,10 @@ async function fixture({
     storage: {
       get: async (key) => {
         if (failDailyGet && key === 'dailyClosures') throw new Error('storage read failed')
+        if (key === 'dailyClosures' && closed.length > 0) reads.afterClose += 1
+        if (failDailyGetAfterClose && key === 'dailyClosures' && closed.length > 0) {
+          throw new Error('storage read failed after close')
+        }
         return store.get(key) ?? null
       },
       set: (key, value) => {
@@ -82,6 +96,7 @@ async function fixture({
       }
       if (command === 'wait') return { wait: { satisfied: idle } }
       assert.equal(command, 'close')
+      onClose?.((ms) => { time += ms })
       if (failClose) {
         if (closeFailsAfterRemoval) state.terminals = state.terminals.filter((row) => row.handle !== args[1])
         throw new Error('close failed')
@@ -93,7 +108,7 @@ async function fixture({
   })
   return {
     state, closed, status, logs, store, emit, fire: () => poll(),
-    writes, setDailyFailing: (value) => { dailyFailing = value },
+    writes, reads, setDailyFailing: (value) => { dailyFailing = value },
     tick: async (ms) => { time += ms; await poll() }
   }
 }
@@ -263,7 +278,7 @@ test('avisa uma vez quando a gravação do contador falha seguidamente', async (
   assert.equal(f.logs.filter((line) => line.includes('Não foi possível salvar o contador diário')).length, 1)
 })
 
-test('não perde dias pendentes em viradas seguidas sem gravação', async () => {
+test('descarta dias pendentes em viradas seguidas sem gravação', async () => {
   const runs = [completed]
   const other = { ...terminal, handle: 'term_2', ptyId: 'pty-2', tabId: 'tab-2', leafId: 'leaf-2', incarnationId: 'instance-2' }
   const completedOther = { ...completed, id: 'run-2', terminalPaneKey: 'tab-2:leaf-2' }
@@ -276,9 +291,9 @@ test('não perde dias pendentes em viradas seguidas sem gravação', async () =>
   await f.tick(86_400_000) // dia A+2: virada, dia A+1 fica pendente
   f.setDailyFailing(false)
   await f.tick(60_000)
-  const dayA = new Date(180_000).toLocaleDateString('en-CA')
-  const dayA1 = new Date(86_580_000).toLocaleDateString('en-CA')
-  assert.deepEqual(f.writes.map((w) => [w.day, w.count]), [[dayA, 1], [dayA1, 1]])
+  // A contagem do dia anterior não gravada não é recuperada; só o dia atual, sem contagem, existe no storage.
+  assert.deepEqual(f.writes, [])
+  assert.match(f.status.at(-1).tooltip, /Um dia sem gravação foi descartado/)
 })
 
 test('falha na revalidação de um terminal não reinicia a carência dos outros', async () => {
@@ -351,10 +366,60 @@ test('tenta de novo após nova carência se o processo segue listado e a listage
   assert.equal(f.store.get('dailyClosures'), undefined)
 })
 
-test('tooltip não conta como aberto um terminal já fechado que o Orca ainda lista', async () => {
+test('tooltip separa o terminal já fechado que o Orca ainda lista dos demais listados', async () => {
   const f = await fixture({ keepAfterClose: true })
   await f.tick(180_000)
-  assert.match(f.status.at(-1).tooltip, /0 abertos na varredura/)
+  assert.match(f.status.at(-1).tooltip, /0 terminais com automação na varredura \(1 já fechado pela limpeza\)/)
+})
+
+test('falha de leitura do contador só depois do close não perde a contagem', async () => {
+  // Com prazo zero, a primeira varredura fecha logo após carregar o contador antes do close.
+  // Depois do close, nenhuma leitura de dailyClosures pode ocorrer: a contagem vem do cache.
+  const f = await fixture({ idleMinutes: 0, failDailyGetAfterClose: true })
+  assert.deepEqual(f.closed, ['term_1'])
+  assert.equal(f.reads.afterClose, 0)
+  assert.equal(f.store.get('dailyClosures').count, 1)
+  assert.equal(f.store.get('closureHistory').length, 1)
+})
+
+test('virada durante o close descarta o dia anterior sem gravação e grava só o atual', async () => {
+  const runs = [completed]
+  const other = { ...terminal, handle: 'term_2', ptyId: 'pty-2', tabId: 'tab-2', leafId: 'leaf-2', incarnationId: 'instance-2' }
+  const completedOther = { ...completed, id: 'run-2', terminalPaneKey: 'tab-2:leaf-2' }
+  let closes = 0
+  const f = await fixture({
+    runs,
+    failDailySet: true,
+    onClose: (advance) => {
+      closes += 1
+      if (closes === 2) advance(2 * 86_400_000)
+    }
+  })
+  await f.tick(180_000) // dia A: term_1 fecha, gravação falha
+  runs.push(completedOther)
+  f.state.terminals.push(other)
+  await f.tick(180_000) // term_2 passa a ser observado
+  await f.tick(180_000) // term_2 fecha e a virada acontece durante o close
+  f.setDailyFailing(false)
+  await f.tick(60_000)
+  assert.deepEqual(f.writes.map((w) => [w.day, w.count]), [
+    [new Date(540_000 + 2 * 86_400_000).toLocaleDateString('en-CA'), 1]
+  ])
+  assert.match(f.status.at(-1).tooltip, /Um dia sem gravação foi descartado/)
+})
+
+test('fechamento que cruza a meia-noite é contado no dia em que terminou', async () => {
+  let crossed = false
+  const f = await fixture({
+    onClose: (advance) => {
+      if (crossed) return
+      crossed = true
+      advance(2 * 86_400_000)
+    }
+  })
+  await f.tick(180_000)
+  assert.equal(f.store.get('dailyClosures').day, new Date(180_000 + 2 * 86_400_000).toLocaleDateString('en-CA'))
+  assert.equal(f.store.get('dailyClosures').count, 1)
 })
 
 test('trata listagem posterior malformada como falha de listagem', async () => {
@@ -409,6 +474,7 @@ test('outras sessões são destacadas e nunca fechadas', async () => {
     settings: { otherObservationEnabled: true, otherIdleMinutes: 0 }
   })
   assert.match(f.status.at(-1).tooltip, /1 de 1 outras sessões/)
+  assert.match(f.status.at(-1).tooltip, /0 terminais com automação na varredura/)
   await f.tick(180_000)
   assert.deepEqual(f.closed, [])
 })

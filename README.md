@@ -21,7 +21,7 @@ Na minha busca, não encontrei um plugin que fechasse os terminais deixados pela
 No Orca, abra **Configurações → Plugins** e procure por **Terminal Clearup** se o plugin estiver disponível no seu catálogo comunitário. Também é possível instalar diretamente do GitHub:
 
 ```sh
-orca plugin install Nomadiction8991/terminal-clearup@v0.3.21
+orca plugin install Nomadiction8991/terminal-clearup@v0.3.22
 ```
 
 Revise o acesso solicitado pelo Orca e habilite o plugin. A limpeza de automações vem ligada por padrão.
@@ -31,6 +31,8 @@ Revise o acesso solicitado pelo Orca e habilite o plugin. A limpeza de automaç�
 1. Na inicialização e a cada minuto, o plugin cruza os terminais abertos com o histórico local de automações. Isso inclui terminais que já estavam abertos antes da instalação.
 2. Um terminal entra na limpeza quando tem vínculo único com uma execução concluída. A espera começa na primeira detecção e reinicia se o terminal gerar nova saída. Antes do fechamento, o plugin confere novamente a identidade da sessão e sua atividade.
 3. O contador da barra inferior mostra as abas fechadas hoje e a estimativa de RAM liberada quando há medição. O painel **Histórico do Terminal Clearup** guarda os 50 fechamentos mais recentes.
+
+Limite conhecido: o contador do dia é gravado no armazenamento do Orca, que guarda um único valor. Se a gravação falhar durante um dia inteiro, a contagem não gravada desse dia se perde na virada, e o tooltip mostra um aviso no dia seguinte. O histórico de fechamentos não é afetado.
 
 Quando o Orca perde o acompanhamento de uma execução, há uma regra separada. Ela exige pelo menos três minutos sem nova saída e confirmação de ociosidade pelo Orca. Terminais sem vínculo identificado com automações podem ser observados, mas ficam fora do fechamento automático.
 
